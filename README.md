@@ -22,20 +22,6 @@ This application captures faces from a webcam, matches them against a pre-regist
 - Database: CSV / SQLite / MySQL (configurable)
 - Hardware: Webcam or external camera
 
-## Project Structure
-face_attendance_system/
-│
-├── dataset/ # Stores registered face images
-├── attendance/ # Attendance CSV files
-├── static/ # CSS, JS (for web version)
-├── templates/ # HTML templates (for web version)
-├── main.py # Main program file
-├── train.py # Script to encode faces
-├── requirements.txt # Python dependencies
-└── README.md # Project documentation
-
-
-
 ## Installation & Setup
 
 ## 1. Clone the Repository:
