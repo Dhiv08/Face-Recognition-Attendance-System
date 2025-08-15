@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Face Recognition Attendance (Web)</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Face Recognition Attendance System</h1>
+    <nav>
+      <button class="tab-btn" data-tab="tab-capture">1) Register & Capture</button>
+      <button class="tab-btn" data-tab="tab-train">2) Train</button>
+      <button class="tab-btn" data-tab="tab-track">3) Track Attendance</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tab-capture" class="tab active">
+      <h2>Register Employee & Capture Images</h2>
+
+      <form id="capture-form" onsubmit="return false;">
+        <div class="form-row">
+          <label>Employee ID</label>
+          <input type="number" id="emp-id" required>
+        </div>
+        <div class="form-row">
+          <label>Employee Name</label>
+          <input type="text" id="emp-name" required>
+        </div>
+        <div class="form-row">
+          <button id="start-camera">Start Camera</button>
+          <button id="stop-camera" disabled>Stop Camera</button>
+        </div>
+        <div class="form-row">
+          <button id="capture-samples" disabled>Capture 30 Samples</button>
+          <span id="capture-progress"></span>
+        </div>
+      </form>
+
+      <div class="video-wrap">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="overlay" width="640" height="480"></canvas>
+      </div>
+      <div id="capture-error" class="notice error" style="display:none;"></div>
+    </section>
+
+    <section id="tab-train" class="tab">
+      <h2>Train Model</h2>
+      <p>After capturing images for your employees, train.</p>
+      <button id="train-btn">Train Now</button>
+      <div id="train-status"></div>
+  
+    </section>
+
+    <section id="tab-track" class="tab">
+      <h2>Track Attendance</h2>
+     
+      <div class="form-row">
+        <button id="start-track">Start Tracking</button>
+        <button id="stop-track" disabled>Stop Tracking</button>
+        <button id="save-attendance">Save Attendance CSV</button>
+      </div>
+      <div class="video-wrap">
+        <video id="video-track" autoplay playsinline></video>
+        <canvas id="overlay-track" width="640" height="480"></canvas>
+      </div>
+      <div id="track-error" class="notice error" style="display:none;"></div>
+      <div id="track-status"></div>
+    </section>
+  </main>
+
+
+
+  <script>
+    // Tabs
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    // Util
+    function frameToDataURL(video) {
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth || 640;
+      c.height = video.videoHeight || 480;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(video, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg');
+    }
+    function showError(el, msg) {
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+    function hideError(el) {
+      el.textContent = '';
+      el.style.display = 'none';
+    }
+
+    // 1) Capture page
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const octx = overlay.getContext('2d');
+    const startCamBtn = document.getElementById('start-camera');
+    const stopCamBtn = document.getElementById('stop-camera');
+    const captureBtn = document.getElementById('capture-samples');
+    const progressSpan = document.getElementById('capture-progress');
+    const captureError = document.getElementById('capture-error');
+    let stream = null;
+
+    startCamBtn.onclick = async () => {
+      startCamBtn.disabled = true;
+      hideError(captureError);
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        video.srcObject = stream;
+        stopCamBtn.disabled = false;
+        captureBtn.disabled = false;
+      } catch (e) {
+        showError(captureError, "Camera access failed: " + e);
+        startCamBtn.disabled = false;
+      }
+    };
+
+    stopCamBtn.onclick = () => {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      stopCamBtn.disabled = true;
+      captureBtn.disabled = true;
+      startCamBtn.disabled = false;
+    };
+
+    // Capture 30 face crops on server
+    captureBtn.onclick = async () => {
+      const empId = document.getElementById('emp-id').value.trim();
+      const empName = document.getElementById('emp-name').value.trim();
+      if (!empId || !empName) {
+        showError(captureError, "Please enter ID and Name");
+        return;
+      }
+      hideError(captureError);
+      let saved = 0;
+      progressSpan.textContent = "Starting capture...";
+      for (let i = 0; i < 200 && saved < 30; i++) { // up to 200 frames to find 30 faces
+        if (!stream) break;
+        const dataURL = frameToDataURL(video);
+        const form = new FormData();
+        form.append("id", empId);
+        form.append("name", empName);
+        form.append("image", dataURL);
+        try {
+          const res = await fetch("/api/capture", { method: "POST", body: form });
+          const json = await res.json();
+          if (json.ok) {
+            saved += json.saved;
+            progressSpan.textContent = `Saved ${saved}/30 face samples`;
+          } else {
+            const msg = json.error || "Unknown";
+            showError(captureError, msg);
+            break;
+          }
+        } catch (e) {
+          showError(captureError, "Network error");
+          break;
+        }
+        await new Promise(r => setTimeout(r, 150)); // throttle ~6-7 fps
+      }
+      if (saved >= 30) {
+        progressSpan.textContent = "Done! 30 samples captured.";
+      } else {
+        progressSpan.textContent += " (Stopped early)";
+      }
+    };
+
+    // 2) Train
+    document.getElementById('train-btn').onclick = async () => {
+      const status = document.getElementById('train-status');
+      status.textContent = 'Training...';
+      try {
+        const res = await fetch("/api/train", { method: "POST" });
+        const json = await res.json();
+        if (json.ok) status.textContent = json.message;
+        else status.textContent = "Error: " + (json.error || "Unknown");
+      } catch (e) {
+        status.textContent = "Network error";
+      }
+    };
+
+    // 3) Track attendance
+    const videoTrack = document.getElementById('video-track');
+    const overlayTrack = document.getElementById('overlay-track');
+    const tctx = overlayTrack.getContext('2d');
+    const startTrackBtn = document.getElementById('start-track');
+    const stopTrackBtn = document.getElementById('stop-track');
+    const saveAttendanceBtn = document.getElementById('save-attendance');
+    const trackError = document.getElementById('track-error');
+    let trackStream = null;
+    let tracking = false;
+    let trackTimer = null;
+
+    startTrackBtn.onclick = async () => {
+      startTrackBtn.disabled = true;
+      hideError(trackError);
+      try {
+        trackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        videoTrack.srcObject = trackStream;
+        tracking = true;
+        stopTrackBtn.disabled = false;
+        loopRecognize();
+      } catch (e) {
+        showError(trackError, "Camera access failed: " + e);
+        startTrackBtn.disabled = false;
+      }
+    };
+
+    stopTrackBtn.onclick = () => {
+      tracking = false;
+      if (trackStream) {
+        trackStream.getTracks().forEach(t => t.stop());
+        trackStream = null;
+      }
+      stopTrackBtn.disabled = true;
+      startTrackBtn.disabled = false;
+      if (trackTimer) clearTimeout(trackTimer);
+    };
+
+    async function loopRecognize() {
+      if (!tracking) return;
+      const dataURL = frameToDataURL(videoTrack);
+      const form = new FormData();
+      form.append("image", dataURL);
+      try {
+        const res = await fetch("/api/recognize", { method: "POST", body: form });
+        const json = await res.json();
+        tctx.clearRect(0, 0, overlayTrack.width, overlayTrack.height);
+        if (json.ok) {
+          hideError(trackError);
+          const faces = json.faces || [];
+          let alreadyFlag = false;
+          faces.forEach(f => {
+            tctx.lineWidth = 2;
+            tctx.strokeStyle = "lime";
+            tctx.strokeRect(f.x, f.y, f.w, f.h);
+            tctx.font = "16px sans-serif";
+            tctx.fillStyle = "lime";
+            const label = f.label + (f.conf !== null ? ` (${f.conf.toFixed(1)})` : "");
+            tctx.fillText(label, f.x, Math.max(15, f.y - 5));
+            if (f.already) alreadyFlag = true;
+          });
+          const base = `Faces: ${faces.length} | Entries this session: ${json.attendance_size}`;
+          document.getElementById('track-status').textContent = alreadyFlag ? base + " • Attendance already marked today." : base;
+        } else {
+          // Guarded errors: phone detected or multiple faces
+          showError(trackError, json.error || "Unknown error");
+          document.getElementById('track-status').textContent = "";
+        }
+      } catch (e) {
+        showError(trackError, "Network error");
+      }
+      trackTimer = setTimeout(loopRecognize, 200); // ~5 fps
+    }
+
+    saveAttendanceBtn.onclick = async () => {
+      try {
+        const res = await fetch("/api/save_attendance", { method: "POST" });
+        if (!res.ok) {
+          const json = await res.json();
+          showError(trackError, "Save error: " + (json.error || "Unknown"));
+          return;
+        }
+        // Trigger file download
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "attendance.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+        document.getElementById('track-status').textContent = "Attendance saved and downloaded.";
+      } catch (e) {
+        showError(trackError, "Network error saving attendance.");
+      }
+    };
+  </script>
+</body>
+</html>
